@@ -11,6 +11,9 @@ Streamlit app untuk memantau perbandingan PRE SURVEY dan POST SURVEY.
 
 App langsung membaca file parquet di folder `data/`, jadi tidak perlu memproses Excel besar saat halaman dibuka.
 
+Pencarian detail menerima satu atau beberapa `NO_EOR`. Pisahkan beberapa nilai dengan
+baris baru, koma, atau titik koma.
+
 ## Jalankan Lokal
 
 ```bash
@@ -24,4 +27,3 @@ streamlit run app.py
 2. Buat app baru di Streamlit Cloud.
 3. Pilih main file `app.py`.
 4. Deploy.
-

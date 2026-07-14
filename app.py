@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -287,6 +288,61 @@ def filter_summary_by_date(summary: pd.DataFrame, date_range) -> pd.DataFrame:
     ].copy()
 
 
+def parse_no_eor_queries(value: str) -> list[str]:
+    queries = [query.strip() for query in re.split(r"[\n,;]+", value) if query.strip()]
+    unique_queries = {}
+    for query in queries:
+        unique_queries.setdefault(query.casefold(), query)
+    return list(unique_queries.values())
+
+
+def filter_detail_by_no_eor(detail: pd.DataFrame, value: str) -> pd.DataFrame:
+    queries = parse_no_eor_queries(value)
+    if not queries:
+        return detail.iloc[0:0].copy()
+
+    normalized_no_eor = detail["NO_EOR"].astype("string").str.casefold()
+    matches = pd.Series(False, index=detail.index)
+    for query in queries:
+        matches |= normalized_no_eor.str.contains(query.casefold(), na=False, regex=False)
+    return detail[matches].copy()
+
+
+def build_claim_comparison(
+    detail: pd.DataFrame,
+    filtered_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    active_keys = filtered_summary[SUMMARY_KEYS].drop_duplicates()
+    active_detail = detail.merge(active_keys, on=SUMMARY_KEYS, how="inner")
+    rows = []
+
+    for claim_type in ["CLAIM", "NON CLAIM"]:
+        for survey_type in ["PRE", "POST"]:
+            claim_column = f"{survey_type}_CLAIM"
+            subtotal_column = f"{survey_type}_SUBTOTALACTUAL"
+            normalized_claim = (
+                active_detail[claim_column].astype("string").str.strip().str.upper()
+            )
+            claim_detail = active_detail[normalized_claim == claim_type]
+            rows.append(
+                {
+                    "CLAIM_TYPE": claim_type,
+                    "SURVEY_TYPE": survey_type,
+                    "EOR_CONTAINER": len(claim_detail[SUMMARY_KEYS].drop_duplicates()),
+                    "PEKERJAAN": len(claim_detail),
+                    "TOTAL_BIAYA": pd.to_numeric(
+                        claim_detail[subtotal_column], errors="coerce"
+                    ).sum(),
+                }
+            )
+
+    return pd.DataFrame(rows).set_index(["CLAIM_TYPE", "SURVEY_TYPE"])
+
+
+def metric_delta(post_value, pre_value, formatter=format_signed_number) -> str:
+    return f"{formatter(post_value - pre_value)} vs PRE"
+
+
 def format_detail_display(detail: pd.DataFrame) -> pd.DataFrame:
     display = pd.DataFrame()
     empty = pd.Series(pd.NA, index=detail.index)
@@ -366,9 +422,13 @@ with st.sidebar:
         value=True,
     )
     with st.form("detail_search_form"):
-        detail_no_eor_input = st.text_input(
+        detail_no_eor_input = st.text_area(
             "Search detail by NO_EOR",
-            placeholder="Contoh: EOR/00003012/01/2026",
+            placeholder=(
+                "Satu atau beberapa NO_EOR\n"
+                "Contoh: EOR/00003012/01/2026, EOR/00003013/01/2026"
+            ),
+            height=100,
         )
         search_submitted = st.form_submit_button("Search", use_container_width=True)
     if search_submitted:
@@ -402,6 +462,69 @@ metric_cols[0].metric("Total EOR/Container", f"{len(filtered_summary):,}")
 metric_cols[1].metric("Total Pre", format_currency(pre_total))
 metric_cols[2].metric("Total Post", format_currency(post_total))
 metric_cols[3].metric("Selisih Post - Pre", format_currency(post_total - pre_total))
+
+claim_comparison = build_claim_comparison(detail_df, filtered_summary)
+claim_pre = claim_comparison.loc[("CLAIM", "PRE")]
+claim_post = claim_comparison.loc[("CLAIM", "POST")]
+non_claim_pre = claim_comparison.loc[("NON CLAIM", "PRE")]
+non_claim_post = claim_comparison.loc[("NON CLAIM", "POST")]
+
+st.subheader("Perbandingan Claim dan Non Claim")
+st.caption("Mengikuti filter summary yang sedang aktif.")
+
+eor_cols = st.columns(4)
+eor_cols[0].metric("Claim EOR/Container PRE", f"{claim_pre['EOR_CONTAINER']:,.0f}")
+eor_cols[1].metric(
+    "Claim EOR/Container POST",
+    f"{claim_post['EOR_CONTAINER']:,.0f}",
+    metric_delta(claim_post["EOR_CONTAINER"], claim_pre["EOR_CONTAINER"]),
+    delta_color="off",
+)
+eor_cols[2].metric(
+    "Non Claim EOR/Container PRE",
+    f"{non_claim_pre['EOR_CONTAINER']:,.0f}",
+)
+eor_cols[3].metric(
+    "Non Claim EOR/Container POST",
+    f"{non_claim_post['EOR_CONTAINER']:,.0f}",
+    metric_delta(non_claim_post["EOR_CONTAINER"], non_claim_pre["EOR_CONTAINER"]),
+    delta_color="off",
+)
+
+work_cols = st.columns(4)
+work_cols[0].metric("Claim Pekerjaan PRE", f"{claim_pre['PEKERJAAN']:,.0f}")
+work_cols[1].metric(
+    "Claim Pekerjaan POST",
+    f"{claim_post['PEKERJAAN']:,.0f}",
+    metric_delta(claim_post["PEKERJAAN"], claim_pre["PEKERJAAN"]),
+    delta_color="off",
+)
+work_cols[2].metric("Non Claim Pekerjaan PRE", f"{non_claim_pre['PEKERJAAN']:,.0f}")
+work_cols[3].metric(
+    "Non Claim Pekerjaan POST",
+    f"{non_claim_post['PEKERJAAN']:,.0f}",
+    metric_delta(non_claim_post["PEKERJAAN"], non_claim_pre["PEKERJAAN"]),
+    delta_color="off",
+)
+
+cost_cols = st.columns(4)
+cost_cols[0].metric("Claim Total Biaya PRE", format_currency(claim_pre["TOTAL_BIAYA"]))
+cost_cols[1].metric(
+    "Claim Total Biaya POST",
+    format_currency(claim_post["TOTAL_BIAYA"]),
+    metric_delta(claim_post["TOTAL_BIAYA"], claim_pre["TOTAL_BIAYA"]),
+    delta_color="off",
+)
+cost_cols[2].metric(
+    "Non Claim Total Biaya PRE",
+    format_currency(non_claim_pre["TOTAL_BIAYA"]),
+)
+cost_cols[3].metric(
+    "Non Claim Total Biaya POST",
+    format_currency(non_claim_post["TOTAL_BIAYA"]),
+    metric_delta(non_claim_post["TOTAL_BIAYA"], non_claim_pre["TOTAL_BIAYA"]),
+    delta_color="off",
+)
 
 summary_view_cols = [
     "NO_EOR",
@@ -443,12 +566,12 @@ else:
 
 st.subheader("Detail one-by-one")
 if detail_no_eor_search:
-    selected_detail = detail_df[
-        detail_df["NO_EOR"]
-        .astype("string")
-        .str.contains(detail_no_eor_search, case=False, na=False, regex=False)
-    ].copy()
-    st.caption(f"Search NO_EOR: {detail_no_eor_search}")
+    no_eor_queries = parse_no_eor_queries(detail_no_eor_search)
+    selected_detail = filter_detail_by_no_eor(detail_df, detail_no_eor_search)
+    st.caption(
+        f"Search {len(no_eor_queries)} NO_EOR: "
+        + ", ".join(no_eor_queries)
+    )
 elif selected is None:
     st.info("Klik satu baris summary atau isi NO_EOR lalu tekan Search.")
     selected_detail = pd.DataFrame()
@@ -502,4 +625,4 @@ if not selected_detail.empty:
         },
     )
 elif detail_no_eor_search:
-    st.info("NO_EOR tidak ditemukan di detail.")
+    st.info("NO_EOR yang dicari tidak ditemukan di detail.")
