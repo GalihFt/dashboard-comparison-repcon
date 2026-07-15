@@ -47,6 +47,14 @@ DETAIL_DISPLAY_FIELDS = [
     "SUBTOTALACTUAL",
 ]
 
+CLAIM_COMPARISON_COLUMNS = [
+    *SUMMARY_KEYS,
+    "PRE_CLAIM",
+    "POST_CLAIM",
+    "PRE_SUBTOTALACTUAL",
+    "POST_SUBTOTALACTUAL",
+]
+
 
 st.set_page_config(
     page_title="Pre vs Post Survey Monitor",
@@ -211,6 +219,10 @@ def normalize_loaded_frames(summary: pd.DataFrame, detail: pd.DataFrame):
     return summary, detail
 
 
+def read_parquet_compact(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path, dtype_backend="pyarrow")
+
+
 def save_cache(summary: pd.DataFrame, detail: pd.DataFrame) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     summary.to_parquet(SUMMARY_CACHE, index=False)
@@ -245,17 +257,17 @@ def build_cache() -> tuple[pd.DataFrame, pd.DataFrame]:
     return summary, detail
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_data(force_rebuild: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not force_rebuild and DEPLOY_SUMMARY.exists() and DEPLOY_DETAIL.exists():
-        summary = pd.read_parquet(DEPLOY_SUMMARY)
-        detail = pd.read_parquet(DEPLOY_DETAIL)
+        summary = read_parquet_compact(DEPLOY_SUMMARY)
+        detail = read_parquet_compact(DEPLOY_DETAIL)
         if has_required_detail_columns(detail):
             return normalize_loaded_frames(summary, detail)
 
     if not force_rebuild and SUMMARY_CACHE.exists() and DETAIL_CACHE.exists():
-        summary = pd.read_parquet(SUMMARY_CACHE)
-        detail = pd.read_parquet(DETAIL_CACHE)
+        summary = read_parquet_compact(SUMMARY_CACHE)
+        detail = read_parquet_compact(DETAIL_CACHE)
         if not has_required_detail_columns(detail):
             return build_cache()
         return normalize_loaded_frames(summary, detail)
@@ -313,7 +325,11 @@ def build_claim_comparison(
     filtered_summary: pd.DataFrame,
 ) -> pd.DataFrame:
     active_keys = filtered_summary[SUMMARY_KEYS].drop_duplicates()
-    active_detail = detail.merge(active_keys, on=SUMMARY_KEYS, how="inner")
+    active_detail = detail[CLAIM_COMPARISON_COLUMNS].merge(
+        active_keys,
+        on=SUMMARY_KEYS,
+        how="inner",
+    )
     rows = []
 
     for claim_type in ["CLAIM", "NON CLAIM"]:
@@ -472,54 +488,70 @@ non_claim_post = claim_comparison.loc[("NON CLAIM", "POST")]
 st.subheader("Perbandingan Claim dan Non Claim")
 st.caption("Mengikuti filter summary yang sedang aktif.")
 
-eor_cols = st.columns(4)
-eor_cols[0].metric("Claim EOR/Container PRE", f"{claim_pre['EOR_CONTAINER']:,.0f}")
-eor_cols[1].metric(
+st.markdown("**PRE Survey**")
+pre_volume_cols = st.columns(4)
+pre_volume_cols[0].metric(
+    "Claim EOR/Container PRE",
+    f"{claim_pre['EOR_CONTAINER']:,.0f}",
+)
+pre_volume_cols[1].metric(
+    "Non Claim EOR/Container PRE",
+    f"{non_claim_pre['EOR_CONTAINER']:,.0f}",
+)
+pre_volume_cols[2].metric(
+    "Claim Pekerjaan PRE",
+    f"{claim_pre['PEKERJAAN']:,.0f}",
+)
+pre_volume_cols[3].metric(
+    "Non Claim Pekerjaan PRE",
+    f"{non_claim_pre['PEKERJAAN']:,.0f}",
+)
+
+pre_cost_cols = st.columns(2)
+pre_cost_cols[0].metric(
+    "Claim Total Biaya PRE",
+    format_currency(claim_pre["TOTAL_BIAYA"]),
+)
+pre_cost_cols[1].metric(
+    "Non Claim Total Biaya PRE",
+    format_currency(non_claim_pre["TOTAL_BIAYA"]),
+)
+
+st.markdown("**POST Survey**")
+post_volume_cols = st.columns(4)
+post_volume_cols[0].metric(
     "Claim EOR/Container POST",
     f"{claim_post['EOR_CONTAINER']:,.0f}",
     metric_delta(claim_post["EOR_CONTAINER"], claim_pre["EOR_CONTAINER"]),
     delta_color="off",
 )
-eor_cols[2].metric(
-    "Non Claim EOR/Container PRE",
-    f"{non_claim_pre['EOR_CONTAINER']:,.0f}",
-)
-eor_cols[3].metric(
+post_volume_cols[1].metric(
     "Non Claim EOR/Container POST",
     f"{non_claim_post['EOR_CONTAINER']:,.0f}",
     metric_delta(non_claim_post["EOR_CONTAINER"], non_claim_pre["EOR_CONTAINER"]),
     delta_color="off",
 )
-
-work_cols = st.columns(4)
-work_cols[0].metric("Claim Pekerjaan PRE", f"{claim_pre['PEKERJAAN']:,.0f}")
-work_cols[1].metric(
+post_volume_cols[2].metric(
     "Claim Pekerjaan POST",
     f"{claim_post['PEKERJAAN']:,.0f}",
     metric_delta(claim_post["PEKERJAAN"], claim_pre["PEKERJAAN"]),
     delta_color="off",
 )
-work_cols[2].metric("Non Claim Pekerjaan PRE", f"{non_claim_pre['PEKERJAAN']:,.0f}")
-work_cols[3].metric(
+post_volume_cols[3].metric(
     "Non Claim Pekerjaan POST",
     f"{non_claim_post['PEKERJAAN']:,.0f}",
     metric_delta(non_claim_post["PEKERJAAN"], non_claim_pre["PEKERJAAN"]),
     delta_color="off",
 )
 
-cost_cols = st.columns(4)
-cost_cols[0].metric("Claim Total Biaya PRE", format_currency(claim_pre["TOTAL_BIAYA"]))
-cost_cols[1].metric(
+post_cost_cols = st.columns(2)
+post_cost_cols[0].metric(
     "Claim Total Biaya POST",
     format_currency(claim_post["TOTAL_BIAYA"]),
     metric_delta(claim_post["TOTAL_BIAYA"], claim_pre["TOTAL_BIAYA"]),
     delta_color="off",
 )
-cost_cols[2].metric(
-    "Non Claim Total Biaya PRE",
-    format_currency(non_claim_pre["TOTAL_BIAYA"]),
-)
-cost_cols[3].metric(
+post_cost_cols[1].metric(
     "Non Claim Total Biaya POST",
     format_currency(non_claim_post["TOTAL_BIAYA"]),
     metric_delta(non_claim_post["TOTAL_BIAYA"], non_claim_pre["TOTAL_BIAYA"]),
